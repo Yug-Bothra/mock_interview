@@ -1,32 +1,25 @@
 """
 Vercel-Compatible Interview Assistant Backend
-✅ FIXED: Proper handler export for Vercel
-✅ FastAPI with Mangum adapter
-✅ All WebSocket functionality converted to REST
+File: api/main.py
 """
 
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, Dict, Any, List
+from mangum import Mangum
 import os
 import json
 import time
-from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from dotenv import load_dotenv
-import openai
-from mangum import Mangum
 
-load_dotenv()
+# Environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+# Initialize FastAPI
+app = FastAPI(title="Interview Assistant API")
 
-if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
-
-app = FastAPI(title="Interview Assistant API", version="2.0.0")
-
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,10 +28,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DEFAULT_MODEL = "gpt-4o-mini"
-
 # ============================================================================
-# PYDANTIC MODELS
+# MODELS
 # ============================================================================
 
 class TranscriptRequest(BaseModel):
@@ -46,88 +37,57 @@ class TranscriptRequest(BaseModel):
     language: str = "en"
     stream_type: str = "candidate"
 
-class TranscriptResponse(BaseModel):
-    transcript: str
-    confidence: float = 0.0
-    stream_type: str
-
 class QuestionProcessRequest(BaseModel):
     transcript: str
     settings: Dict[str, Any] = {}
     persona: Optional[Dict[str, Any]] = None
     custom_style_prompt: Optional[str] = None
 
-class QuestionProcessResponse(BaseModel):
-    has_question: bool
-    question: Optional[str] = None
-    answer: Optional[str] = None
-    processing_time: float = 0.0
-
-class BatchTranscriptRequest(BaseModel):
-    transcripts: List[str]
-    settings: Dict[str, Any] = {}
-    persona: Optional[Dict[str, Any]] = None
-
 # ============================================================================
-# RESPONSE STYLES & PROMPTS
+# CONSTANTS
 # ============================================================================
 
 RESPONSE_STYLES = {
     "concise": {
         "name": "Concise Professional",
-        "prompt": """You are a concise interview assistant. Provide brief, professional answers in 2-3 sentences.
-Focus on the core information without elaboration. Be direct and efficient."""
+        "prompt": "You are a concise interview assistant. Provide brief, professional answers in 2-3 sentences."
     },
     "detailed": {
         "name": "Detailed Professional",
-        "prompt": """You are a detailed interview assistant. Provide comprehensive answers with:
-- Clear explanation of the concept
-- Relevant examples from experience
-- Practical insights
-Keep responses around 150 words, professional and well-structured."""
+        "prompt": "You are a detailed interview assistant. Provide comprehensive answers with clear explanations and examples."
     },
     "storytelling": {
         "name": "Storytelling",
-        "prompt": """You are an engaging interview assistant using storytelling techniques.
-Structure answers using STAR format when appropriate:
-- Situation: Set the context
-- Task: Describe the challenge
-- Action: Explain what you did
-- Result: Share the outcome
-Make responses compelling and memorable while remaining professional."""
+        "prompt": "You are an engaging interview assistant. Use STAR format when appropriate."
     },
     "technical": {
         "name": "Technical Expert",
-        "prompt": """You are a technical interview expert. Provide in-depth technical answers:
-- Explain concepts clearly with proper terminology
-- Include code examples when relevant
-- Discuss trade-offs and best practices
-Be thorough but avoid unnecessary jargon."""
+        "prompt": "You are a technical interview expert. Provide in-depth technical answers with examples."
     }
 }
 
-QUESTION_DETECTION_PROMPT = """You are an intelligent interview assistant that processes conversation transcripts.
+QUESTION_DETECTION_PROMPT = """You are an intelligent interview assistant.
 
 Your task:
-1. Analyze the incoming transcript text
-2. Extract the EXACT question being asked (keep original wording)
-3. If a question is detected, return it in this EXACT format:
+1. Analyze the transcript
+2. Extract the EXACT question (keep original wording)
+3. If question detected, return:
    QUESTION: [extracted question]
    ANSWER: [your answer]
-4. If it's casual conversation or greetings, respond with: "SKIP"
+4. If casual conversation, respond: "SKIP"
 
 Guidelines:
-- DO NOT rephrase the question - extract it EXACTLY as asked
+- DO NOT rephrase the question
+- Keep ALL technical terms
 - Remove only conversational preamble
-- Keep ALL technical terms and original phrasing
 """
 
 # ============================================================================
-# DEEPGRAM TRANSCRIPTION (REST API)
+# HELPER FUNCTIONS
 # ============================================================================
 
 async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> Dict[str, Any]:
-    """Transcribe audio using Deepgram REST API"""
+    """Transcribe using Deepgram REST API"""
     if not DEEPGRAM_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPGRAM_API_KEY not configured")
     
@@ -138,36 +98,24 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
         audio_bytes = base64.b64decode(audio_base64)
         
         url = "https://api.deepgram.com/v1/listen"
-        
         headers = {
             "Authorization": f"Token {DEEPGRAM_API_KEY}",
             "Content-Type": "audio/wav"
         }
-        
         params = {
             "model": "nova-2",
             "language": language,
             "punctuate": "true",
-            "smart_format": "true",
-            "filler_words": "false"
+            "smart_format": "true"
         }
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                headers=headers,
-                params=params,
-                content=audio_bytes
-            )
+            response = await client.post(url, headers=headers, params=params, content=audio_bytes)
             
             if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Deepgram API error: {response.text}"
-                )
+                raise HTTPException(status_code=response.status_code, detail="Deepgram error")
             
             result = response.json()
-            
             transcript = ""
             confidence = 0.0
             
@@ -177,18 +125,9 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
                     transcript = alternatives[0].get("transcript", "")
                     confidence = alternatives[0].get("confidence", 0.0)
             
-            return {
-                "transcript": transcript,
-                "confidence": confidence,
-                "full_response": result
-            }
-            
+            return {"transcript": transcript, "confidence": confidence}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
-
-# ============================================================================
-# AI QUESTION PROCESSING
-# ============================================================================
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def process_question_with_ai(
     transcript: str,
@@ -196,24 +135,21 @@ async def process_question_with_ai(
     persona_data: Optional[Dict] = None,
     custom_style_prompt: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Process transcript and generate answer using OpenAI"""
-    
+    """Process question with OpenAI"""
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
     
     if not transcript or len(transcript.strip()) < 10:
-        return {
-            "has_question": False,
-            "question": None,
-            "answer": None,
-            "message": "Transcript too short"
-        }
+        return {"has_question": False, "question": None, "answer": None}
     
     start_time = time.time()
     
     try:
-        response_style_id = settings.get("selectedResponseStyleId", "concise")
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
         
+        # Build prompt
+        response_style_id = settings.get("selectedResponseStyleId", "concise")
         if custom_style_prompt:
             style_prompt = custom_style_prompt
         else:
@@ -222,6 +158,7 @@ async def process_question_with_ai(
         
         system_prompt = QUESTION_DETECTION_PROMPT + "\n\n" + style_prompt
         
+        # Add persona context
         if persona_data:
             system_prompt += f"""
 
@@ -234,17 +171,20 @@ CANDIDATE CONTEXT:
             if persona_data.get('job_description'):
                 system_prompt += f"- Job Description: {persona_data.get('job_description')}\n"
             if persona_data.get('resume_text'):
-                system_prompt += f"\nCANDIDATE RESUME:\n{persona_data.get('resume_text')}\n"
+                system_prompt += f"\nRESUME:\n{persona_data.get('resume_text')}\n"
         
+        # Add language preference
         prog_lang = settings.get("programmingLanguage", "Python")
-        system_prompt += f"\n\nWhen providing code examples, use {prog_lang}."
+        system_prompt += f"\n\nUse {prog_lang} for code examples."
         
+        # Add custom instructions
         if settings.get("interviewInstructions"):
-            system_prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{settings['interviewInstructions']}"
+            system_prompt += f"\n\nINSTRUCTIONS:\n{settings['interviewInstructions']}"
         
-        model = settings.get("defaultModel", DEFAULT_MODEL)
+        model = settings.get("defaultModel", "gpt-4o-mini")
         
-        response = openai.chat.completions.create(
+        # Call OpenAI
+        response = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -257,15 +197,16 @@ CANDIDATE CONTEXT:
         
         result_text = response.choices[0].message.content.strip()
         
-        if result_text.upper() == "SKIP" or "SKIP" in result_text.upper():
+        # Check for skip
+        if "SKIP" in result_text.upper():
             return {
                 "has_question": False,
                 "question": None,
                 "answer": None,
-                "message": "Not a question",
                 "processing_time": time.time() - start_time
             }
         
+        # Parse response
         question = None
         answer = None
         
@@ -283,69 +224,59 @@ CANDIDATE CONTEXT:
             "answer": answer,
             "processing_time": time.time() - start_time
         }
-        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
-# API ENDPOINTS
+# ROUTES
 # ============================================================================
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
     return {
         "status": "running",
         "service": "Interview Assistant API",
-        "platform": "Vercel",
         "version": "2.0.0",
+        "platform": "Vercel"
+    }
+
+@app.get("/api")
+async def api_root():
+    return {
+        "status": "running",
         "endpoints": {
             "health": "/health",
             "transcribe": "POST /api/transcribe",
-            "process_question": "POST /api/process-question",
-            "batch_process": "POST /api/batch-process",
-            "transcribe_and_answer": "POST /api/transcribe-and-answer",
-            "models": "/api/models/status",
-            "styles": "/api/response-styles"
+            "process": "POST /api/process-question",
+            "combined": "POST /api/transcribe-and-answer"
         }
     }
 
 @app.get("/health")
-async def health_check():
-    """Health check"""
+async def health():
     return {
         "status": "healthy",
-        "platform": "Vercel",
-        "timestamp": time.time(),
-        "services": {
-            "openai": "configured" if OPENAI_API_KEY else "missing",
-            "deepgram": "configured" if DEEPGRAM_API_KEY else "missing"
-        }
+        "openai": bool(OPENAI_API_KEY),
+        "deepgram": bool(DEEPGRAM_API_KEY),
+        "timestamp": time.time()
     }
 
-@app.post("/api/transcribe", response_model=TranscriptResponse)
-async def transcribe_audio(request: TranscriptRequest):
-    """Transcribe audio using Deepgram REST API"""
+@app.post("/api/transcribe")
+async def transcribe(request: TranscriptRequest):
+    """Transcribe audio"""
     try:
-        result = await transcribe_audio_deepgram(
-            request.audio_base64,
-            request.language
-        )
-        
-        return TranscriptResponse(
-            transcript=result["transcript"],
-            confidence=result["confidence"],
-            stream_type=request.stream_type
-        )
-        
-    except HTTPException as e:
-        raise e
+        result = await transcribe_audio_deepgram(request.audio_base64, request.language)
+        return {
+            "transcript": result["transcript"],
+            "confidence": result["confidence"],
+            "stream_type": request.stream_type
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/process-question", response_model=QuestionProcessResponse)
+@app.post("/api/process-question")
 async def process_question(request: QuestionProcessRequest):
-    """Process interview question and generate answer"""
+    """Process question and generate answer"""
     try:
         result = await process_question_with_ai(
             request.transcript,
@@ -353,67 +284,40 @@ async def process_question(request: QuestionProcessRequest):
             request.persona,
             request.custom_style_prompt
         )
-        
-        return QuestionProcessResponse(**result)
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/batch-process")
-async def batch_process_questions(request: BatchTranscriptRequest):
-    """Process multiple questions at once"""
-    try:
-        results = []
-        
-        for transcript in request.transcripts:
-            result = await process_question_with_ai(
-                transcript,
-                request.settings,
-                request.persona
-            )
-            results.append(result)
-        
-        return {
-            "total": len(results),
-            "results": results
-        }
-        
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/transcribe-and-answer")
 async def transcribe_and_answer(request: Request):
-    """One-shot endpoint: Transcribe audio AND generate answer"""
+    """Combined: transcribe + answer"""
     try:
         data = await request.json()
         
+        # Transcribe
         audio_base64 = data.get("audio_base64")
-        language = data.get("language", "en")
-        settings = data.get("settings", {})
-        persona = data.get("persona")
-        
         if not audio_base64:
             raise HTTPException(status_code=400, detail="audio_base64 required")
         
-        # Step 1: Transcribe
-        transcription = await transcribe_audio_deepgram(audio_base64, language)
-        transcript = transcription["transcript"]
+        transcription = await transcribe_audio_deepgram(
+            audio_base64,
+            data.get("language", "en")
+        )
         
+        transcript = transcription["transcript"]
         if not transcript:
             return {
                 "success": False,
-                "message": "No transcript generated",
+                "message": "No transcript",
                 "transcript": "",
                 "answer": None
             }
         
-        # Step 2: Process question
+        # Process
         result = await process_question_with_ai(
             transcript,
-            settings,
-            persona
+            data.get("settings", {}),
+            data.get("persona")
         )
         
         return {
@@ -423,41 +327,31 @@ async def transcribe_and_answer(request: Request):
             "has_question": result["has_question"],
             "question": result.get("question"),
             "answer": result.get("answer"),
-            "processing_time": result.get("processing_time")
+            "processing_time": result.get("processing_time", 0)
         }
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/models/status")
-async def get_model_status():
-    """Get available AI models"""
+async def models_status():
     return {
-        "default_provider": DEFAULT_MODEL,
-        "available_providers": {
-            "gpt-4o-mini": True,
-            "gpt-4o": True
-        },
-        "configured": OPENAI_API_KEY is not None
+        "default_provider": "gpt-4o-mini",
+        "available_providers": {"gpt-4o-mini": True, "gpt-4o": True},
+        "configured": bool(OPENAI_API_KEY)
     }
 
 @app.get("/api/response-styles")
-async def get_response_styles():
-    """Get available response styles"""
+async def response_styles():
     return {
         "styles": {
-            style_id: {
-                "name": config["name"],
-                "description": config["prompt"][:100] + "..."
-            }
-            for style_id, config in RESPONSE_STYLES.items()
+            sid: {"name": cfg["name"], "description": cfg["prompt"][:100]}
+            for sid, cfg in RESPONSE_STYLES.items()
         },
         "default": "concise"
     }
 
 # ============================================================================
-# VERCEL HANDLER - CRITICAL: Must be at module level
+# VERCEL HANDLER - MUST BE AT MODULE LEVEL
 # ============================================================================
 
-# This is the handler Vercel looks for
 handler = Mangum(app, lifespan="off")
