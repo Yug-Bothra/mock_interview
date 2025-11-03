@@ -1,8 +1,8 @@
 """
 Vercel-Compatible Interview Assistant Backend
-✅ FastAPI REST API - No WebSockets
-✅ All functionality converted to POST endpoints
-✅ Vercel Serverless compatible
+✅ FIXED: Proper handler export for Vercel
+✅ FastAPI with Mangum adapter
+✅ All WebSocket functionality converted to REST
 """
 
 import os
@@ -25,7 +25,7 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
-app = FastAPI(title="Interview Assistant API - Vercel REST", version="2.0.0")
+app = FastAPI(title="Interview Assistant API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,37 +38,32 @@ app.add_middleware(
 DEFAULT_MODEL = "gpt-4o-mini"
 
 # ============================================================================
-# PYDANTIC MODELS (Request/Response Schemas)
+# PYDANTIC MODELS
 # ============================================================================
 
 class TranscriptRequest(BaseModel):
-    """Request body for transcription endpoint"""
     audio_base64: str
     language: str = "en"
-    stream_type: str = "candidate"  # "candidate" or "interviewer"
+    stream_type: str = "candidate"
 
 class TranscriptResponse(BaseModel):
-    """Response from transcription endpoint"""
     transcript: str
     confidence: float = 0.0
     stream_type: str
 
 class QuestionProcessRequest(BaseModel):
-    """Request body for question processing"""
     transcript: str
     settings: Dict[str, Any] = {}
     persona: Optional[Dict[str, Any]] = None
     custom_style_prompt: Optional[str] = None
 
 class QuestionProcessResponse(BaseModel):
-    """Response from question processing"""
     has_question: bool
     question: Optional[str] = None
     answer: Optional[str] = None
     processing_time: float = 0.0
 
 class BatchTranscriptRequest(BaseModel):
-    """Process multiple transcripts at once"""
     transcripts: List[str]
     settings: Dict[str, Any] = {}
     persona: Optional[Dict[str, Any]] = None
@@ -132,10 +127,7 @@ Guidelines:
 # ============================================================================
 
 async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> Dict[str, Any]:
-    """
-    Transcribe audio using Deepgram REST API
-    Docs: https://developers.deepgram.com/docs/getting-started-with-pre-recorded-audio
-    """
+    """Transcribe audio using Deepgram REST API"""
     if not DEEPGRAM_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPGRAM_API_KEY not configured")
     
@@ -143,15 +135,13 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
     import httpx
     
     try:
-        # Decode base64 audio
         audio_bytes = base64.b64decode(audio_base64)
         
-        # Deepgram REST API endpoint
         url = "https://api.deepgram.com/v1/listen"
         
         headers = {
             "Authorization": f"Token {DEEPGRAM_API_KEY}",
-            "Content-Type": "audio/wav"  # or audio/mp3, audio/webm, etc.
+            "Content-Type": "audio/wav"
         }
         
         params = {
@@ -178,7 +168,6 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
             
             result = response.json()
             
-            # Extract transcript
             transcript = ""
             confidence = 0.0
             
@@ -223,7 +212,6 @@ async def process_question_with_ai(
     start_time = time.time()
     
     try:
-        # Build system prompt
         response_style_id = settings.get("selectedResponseStyleId", "concise")
         
         if custom_style_prompt:
@@ -234,7 +222,6 @@ async def process_question_with_ai(
         
         system_prompt = QUESTION_DETECTION_PROMPT + "\n\n" + style_prompt
         
-        # Add persona context
         if persona_data:
             system_prompt += f"""
 
@@ -249,17 +236,14 @@ CANDIDATE CONTEXT:
             if persona_data.get('resume_text'):
                 system_prompt += f"\nCANDIDATE RESUME:\n{persona_data.get('resume_text')}\n"
         
-        # Add programming language preference
         prog_lang = settings.get("programmingLanguage", "Python")
         system_prompt += f"\n\nWhen providing code examples, use {prog_lang}."
         
-        # Add custom instructions
         if settings.get("interviewInstructions"):
             system_prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{settings['interviewInstructions']}"
         
         model = settings.get("defaultModel", DEFAULT_MODEL)
         
-        # Call OpenAI
         response = openai.chat.completions.create(
             model=model,
             messages=[
@@ -273,7 +257,6 @@ CANDIDATE CONTEXT:
         
         result_text = response.choices[0].message.content.strip()
         
-        # Check if it's a skip
         if result_text.upper() == "SKIP" or "SKIP" in result_text.upper():
             return {
                 "has_question": False,
@@ -283,7 +266,6 @@ CANDIDATE CONTEXT:
                 "processing_time": time.time() - start_time
             }
         
-        # Parse question and answer
         question = None
         answer = None
         
@@ -311,51 +293,39 @@ CANDIDATE CONTEXT:
 
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
+    """Root endpoint"""
     return {
         "status": "running",
-        "service": "Interview Assistant API - REST",
-        "platform": "Vercel Serverless",
+        "service": "Interview Assistant API",
+        "platform": "Vercel",
         "version": "2.0.0",
-        "architecture": "REST API (No WebSockets)",
         "endpoints": {
             "health": "/health",
             "transcribe": "POST /api/transcribe",
             "process_question": "POST /api/process-question",
             "batch_process": "POST /api/batch-process",
+            "transcribe_and_answer": "POST /api/transcribe-and-answer",
             "models": "/api/models/status",
             "styles": "/api/response-styles"
-        },
-        "docs": "/docs"
+        }
     }
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check"""
     return {
         "status": "healthy",
-        "platform": "Vercel Serverless",
+        "platform": "Vercel",
         "timestamp": time.time(),
         "services": {
             "openai": "configured" if OPENAI_API_KEY else "missing",
             "deepgram": "configured" if DEEPGRAM_API_KEY else "missing"
-        },
-        "architecture": "REST API",
-        "websockets": "not_supported"
+        }
     }
 
-@app.post("/api/transcribe")
+@app.post("/api/transcribe", response_model=TranscriptResponse)
 async def transcribe_audio(request: TranscriptRequest):
-    """
-    Transcribe audio using Deepgram REST API
-    
-    Body:
-    {
-        "audio_base64": "base64_encoded_audio_data",
-        "language": "en",
-        "stream_type": "candidate"
-    }
-    """
+    """Transcribe audio using Deepgram REST API"""
     try:
         result = await transcribe_audio_deepgram(
             request.audio_base64,
@@ -373,26 +343,9 @@ async def transcribe_audio(request: TranscriptRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/process-question")
+@app.post("/api/process-question", response_model=QuestionProcessResponse)
 async def process_question(request: QuestionProcessRequest):
-    """
-    Process interview question and generate answer
-    
-    Body:
-    {
-        "transcript": "What is your experience with Python?",
-        "settings": {
-            "selectedResponseStyleId": "concise",
-            "programmingLanguage": "Python",
-            "defaultModel": "gpt-4o-mini"
-        },
-        "persona": {
-            "position": "Software Engineer",
-            "company_name": "Tech Corp",
-            "resume_text": "..."
-        }
-    }
-    """
+    """Process interview question and generate answer"""
     try:
         result = await process_question_with_ai(
             request.transcript,
@@ -410,19 +363,7 @@ async def process_question(request: QuestionProcessRequest):
 
 @app.post("/api/batch-process")
 async def batch_process_questions(request: BatchTranscriptRequest):
-    """
-    Process multiple questions at once
-    
-    Body:
-    {
-        "transcripts": [
-            "What is your experience?",
-            "Tell me about a challenge you faced"
-        ],
-        "settings": {...},
-        "persona": {...}
-    }
-    """
+    """Process multiple questions at once"""
     try:
         results = []
         
@@ -443,24 +384,19 @@ async def batch_process_questions(request: BatchTranscriptRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/transcribe-and-answer")
-async def transcribe_and_answer(
-    audio_base64: str,
-    language: str = "en",
-    settings: Dict[str, Any] = {},
-    persona: Optional[Dict[str, Any]] = None
-):
-    """
-    One-shot endpoint: Transcribe audio AND generate answer
-    
-    Body:
-    {
-        "audio_base64": "...",
-        "language": "en",
-        "settings": {...},
-        "persona": {...}
-    }
-    """
+async def transcribe_and_answer(request: Request):
+    """One-shot endpoint: Transcribe audio AND generate answer"""
     try:
+        data = await request.json()
+        
+        audio_base64 = data.get("audio_base64")
+        language = data.get("language", "en")
+        settings = data.get("settings", {})
+        persona = data.get("persona")
+        
+        if not audio_base64:
+            raise HTTPException(status_code=400, detail="audio_base64 required")
+        
         # Step 1: Transcribe
         transcription = await transcribe_audio_deepgram(audio_base64, language)
         transcript = transcription["transcript"]
@@ -520,7 +456,8 @@ async def get_response_styles():
     }
 
 # ============================================================================
-# VERCEL HANDLER
+# VERCEL HANDLER - CRITICAL: Must be at module level
 # ============================================================================
 
-handler = Mangum(app)
+# This is the handler Vercel looks for
+handler = Mangum(app, lifespan="off")
