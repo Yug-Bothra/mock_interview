@@ -19,8 +19,6 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import openai
 from mangum import Mangum
-from supabase import create_client, Client
-from PyPDF2 import PdfReader
 
 # Load environment variables
 load_dotenv()
@@ -33,16 +31,21 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
-# Initialize Supabase client
-supabase_client: Client = None
-if SUPABASE_URL and SUPABASE_KEY:
-    supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Initialize Supabase client (lazy loading)
+supabase_client = None
 
-# FastAPI app with root_path for Vercel
+def get_supabase_client():
+    """Lazy load Supabase client"""
+    global supabase_client
+    if supabase_client is None and SUPABASE_URL and SUPABASE_KEY:
+        from supabase import create_client
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return supabase_client
+
+# FastAPI app
 app = FastAPI(
     title="Interview Assistant API",
-    version="2.0.0",
-    root_path="/api"
+    version="2.0.0"
 )
 
 # CORS middleware
@@ -328,12 +331,10 @@ CANDIDATE CONTEXT:
 # ============================================================================
 
 async def extract_text_from_pdf_url(pdf_url: str) -> str:
-    """
-    Download PDF from URL and extract text using PyPDF2
-    (Vercel-compatible, unlike pdfplumber)
-    """
+    """Download PDF from URL and extract text using PyPDF2"""
     try:
         import requests
+        from PyPDF2 import PdfReader
         
         response = requests.get(pdf_url, timeout=15)
         if response.status_code != 200:
@@ -417,22 +418,23 @@ async def root():
         "platform": "Vercel",
         "version": "2.0.0",
         "endpoints": {
-            "health": "/api/health",
-            "transcribe": "POST /api/transcribe",
-            "process_question": "POST /api/process-question",
-            "batch_process": "POST /api/batch-process",
-            "transcribe_and_answer": "POST /api/transcribe-and-answer",
-            "process_resume": "POST /api/process-resume",
-            "process_resumes_bulk": "POST /api/process-resumes-bulk",
-            "resume_status": "GET /api/resume-status/{persona_id}",
-            "models": "/api/models/status",
-            "styles": "/api/response-styles"
+            "health": "/health",
+            "transcribe": "POST /transcribe",
+            "process_question": "POST /process-question",
+            "batch_process": "POST /batch-process",
+            "transcribe_and_answer": "POST /transcribe-and-answer",
+            "process_resume": "POST /process-resume",
+            "process_resumes_bulk": "POST /process-resumes-bulk",
+            "resume_status": "GET /resume-status/{persona_id}",
+            "models": "/models/status",
+            "styles": "/response-styles"
         }
     }
 
 @app.get("/health")
 async def health_check():
     """Health check"""
+    supabase = get_supabase_client()
     return {
         "status": "healthy",
         "platform": "Vercel",
@@ -440,7 +442,7 @@ async def health_check():
         "services": {
             "openai": "configured" if OPENAI_API_KEY else "missing",
             "deepgram": "configured" if DEEPGRAM_API_KEY else "missing",
-            "supabase": "configured" if supabase_client else "missing"
+            "supabase": "configured" if supabase else "missing"
         }
     }
 
@@ -558,10 +560,9 @@ async def transcribe_and_answer(request: Request):
 
 @app.post("/process-resume", response_model=ProcessResumeResponse)
 async def process_single_resume(request: ProcessResumeRequest):
-    """
-    Process a single resume: extract text and generate AI summary
-    """
-    if not supabase_client:
+    """Process a single resume: extract text and generate AI summary"""
+    supabase = get_supabase_client()
+    if not supabase:
         raise HTTPException(
             status_code=500,
             detail="Supabase not configured"
@@ -570,7 +571,7 @@ async def process_single_resume(request: ProcessResumeRequest):
     start_time = time.time()
     
     try:
-        response = supabase_client.table("personas").select(
+        response = supabase.table("personas").select(
             "id, user_id, company_name, position, resume_url, resume_text"
         ).eq("id", request.persona_id).single().execute()
         
@@ -604,7 +605,7 @@ async def process_single_resume(request: ProcessResumeRequest):
         
         summary = await generate_resume_summary(text)
         
-        supabase_client.table("personas").update({
+        supabase.table("personas").update({
             "resume_text": summary
         }).eq("id", request.persona_id).execute()
         
@@ -627,18 +628,16 @@ async def process_single_resume(request: ProcessResumeRequest):
 
 @app.post("/process-resumes-bulk")
 async def process_resumes_bulk(request: BulkProcessResumesRequest):
-    """
-    Process multiple resumes at once
-    ⚠️ Warning: May timeout on Vercel if processing >3 resumes
-    """
-    if not supabase_client:
+    """Process multiple resumes at once"""
+    supabase = get_supabase_client()
+    if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     try:
         personas_to_process = []
         
         if request.user_id:
-            response = supabase_client.table("personas").select(
+            response = supabase.table("personas").select(
                 "id, user_id, company_name, position, resume_url, resume_text"
             ).eq("user_id", request.user_id).execute()
             
@@ -652,7 +651,7 @@ async def process_resumes_bulk(request: BulkProcessResumesRequest):
             
         elif request.persona_ids:
             for persona_id in request.persona_ids:
-                response = supabase_client.table("personas").select(
+                response = supabase.table("personas").select(
                     "id, user_id, company_name, position, resume_url, resume_text"
                 ).eq("id", persona_id).single().execute()
                 
@@ -706,7 +705,7 @@ async def process_resumes_bulk(request: BulkProcessResumesRequest):
                 
                 summary = await generate_resume_summary(text)
                 
-                supabase_client.table("personas").update({
+                supabase.table("personas").update({
                     "resume_text": summary
                 }).eq("id", persona["id"]).execute()
                 
@@ -741,11 +740,12 @@ async def process_resumes_bulk(request: BulkProcessResumesRequest):
 @app.get("/resume-status/{persona_id}")
 async def get_resume_status(persona_id: str):
     """Check if a resume has been processed"""
-    if not supabase_client:
+    supabase = get_supabase_client()
+    if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     try:
-        response = supabase_client.table("personas").select(
+        response = supabase.table("personas").select(
             "id, resume_url, resume_text"
         ).eq("id", persona_id).single().execute()
         
