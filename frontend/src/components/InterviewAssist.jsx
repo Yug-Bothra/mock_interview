@@ -22,7 +22,7 @@ import { jsPDF } from "jspdf";
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 
   (window.location.hostname === 'localhost' 
     ? 'http://localhost:8000' 
-    : 'https://your-vercel-backend.vercel.app');  // ← UPDATE THIS WITH YOUR VERCEL URL
+    : 'https://mock-interview-ybuf.vercel.app');
 
 console.log('🔗 Backend URL:', BACKEND_URL);
 
@@ -89,12 +89,8 @@ class AudioBufferManager {
 // API FUNCTIONS (HTTP POST instead of WebSocket)
 // ============================================================================
 
-/**
- * Transcribe audio using Vercel HTTP API
- */
 async function transcribeAudio(audioData, streamType, language = 'en') {
   try {
-    // Convert Int16Array to base64
     const base64Audio = btoa(
       String.fromCharCode(...new Uint8Array(audioData.buffer))
     );
@@ -125,9 +121,6 @@ async function transcribeAudio(audioData, streamType, language = 'en') {
   }
 }
 
-/**
- * Process question using Vercel HTTP API
- */
 async function processQuestion(transcript, settings, personaData) {
   try {
     const response = await fetch(`${BACKEND_URL}/api/process-question`, {
@@ -266,7 +259,6 @@ export default function InterviewAssist() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
 
-  // Persona & Settings State
   const [personaId] = useState(
     location.state?.personaId || localStorage.getItem("selectedPersona") || null
   );
@@ -314,7 +306,6 @@ export default function InterviewAssist() {
     }
   });
 
-  // Component States
   const [isRecording, setIsRecording] = useState(false);
   const [qaList, setQaList] = useState([]);
   const [candidateTranscript, setCandidateTranscript] = useState([]);
@@ -327,21 +318,17 @@ export default function InterviewAssist() {
   const [showTabModal, setShowTabModal] = useState(false);
   const [tabAudioError, setTabAudioError] = useState("");
 
-  // Current Q&A states
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [currentAnswer, setCurrentAnswer] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isStreamingComplete, setIsStreamingComplete] = useState(false);
 
-  // Current paragraph building states
   const [currentCandidateParagraph, setCurrentCandidateParagraph] = useState("");
   const [currentInterviewerParagraph, setCurrentInterviewerParagraph] = useState("");
   
-  // Pure interim (real-time, not is_final)
   const [currentCandidateInterim, setCurrentCandidateInterim] = useState("");
   const [currentInterviewerInterim, setCurrentInterviewerInterim] = useState("");
 
-  // Refs
   const candidateStreamRef = useRef(null);
   const interviewerStreamRef = useRef(null);
   const candidateAudioContextRef = useRef(null);
@@ -405,7 +392,6 @@ export default function InterviewAssist() {
       setCurrentInterviewerParagraph('');
       console.log('📝 Interviewer:', transcript.substring(0, 50) + '...');
       
-      // Process for Q&A
       handleQuestionProcessing(transcript);
     }
   };
@@ -459,7 +445,6 @@ export default function InterviewAssist() {
     };
     const language = languageMap[settings.audioLanguage] || "en";
 
-    // Show processing indicator
     if (streamType === 'candidate') {
       setCurrentCandidateParagraph('Processing...');
     } else {
@@ -475,7 +460,6 @@ export default function InterviewAssist() {
     if (result && result.transcript) {
       handleTranscriptFromAPI(result.transcript, streamType);
     } else {
-      // Clear processing indicator on error
       if (streamType === 'candidate') {
         setCurrentCandidateParagraph('');
       } else {
@@ -511,7 +495,6 @@ export default function InterviewAssist() {
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       candidateProcessorRef.current = processor;
 
-      // Create buffer manager
       candidateBufferManagerRef.current = new AudioBufferManager(
         flushAudioBuffer,
         'candidate',
@@ -588,7 +571,6 @@ export default function InterviewAssist() {
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       interviewerProcessorRef.current = processor;
 
-      // Create buffer manager
       interviewerBufferManagerRef.current = new AudioBufferManager(
         flushAudioBuffer,
         'interviewer',
@@ -630,7 +612,6 @@ export default function InterviewAssist() {
   };
 
   const stopAllCapture = () => {
-    // Flush remaining buffers
     if (candidateBufferManagerRef.current) {
       candidateBufferManagerRef.current.flush();
       candidateBufferManagerRef.current.clear();
@@ -643,7 +624,6 @@ export default function InterviewAssist() {
       interviewerBufferManagerRef.current = null;
     }
 
-    // Stop candidate audio
     if (candidateProcessorRef.current) {
       candidateProcessorRef.current.disconnect();
       candidateProcessorRef.current = null;
@@ -657,7 +637,6 @@ export default function InterviewAssist() {
       candidateStreamRef.current = null;
     }
 
-    // Stop interviewer audio
     if (interviewerProcessorRef.current) {
       interviewerProcessorRef.current.disconnect();
       interviewerProcessorRef.current = null;
@@ -671,7 +650,6 @@ export default function InterviewAssist() {
       interviewerStreamRef.current = null;
     }
 
-    // Clear paragraph states
     setCurrentCandidateParagraph('');
     setCurrentInterviewerParagraph('');
     setCurrentCandidateInterim('');
