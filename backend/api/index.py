@@ -1,9 +1,12 @@
 """
 Vercel-Compatible Interview Assistant Backend with Resume Processing
 ✅ Optimized for Vercel serverless deployment
-✅ FastAPI with Mangum adapter
+✅ FastAPI with proper module structure
 ✅ REST API only (no WebSockets)
 ✅ Resume processing with PyPDF2 (Vercel-compatible)
+
+IMPORTANT: This file should NOT have 'handler = Mangum(app)' at the bottom!
+The handler is defined in api/index.py
 """
 
 import os
@@ -18,7 +21,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import openai
-from mangum import Mangum
 
 # Load environment variables
 load_dotenv()
@@ -38,17 +40,21 @@ def get_supabase_client():
     """Lazy load Supabase client"""
     global supabase_client
     if supabase_client is None and SUPABASE_URL and SUPABASE_KEY:
-        from supabase import create_client
-        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        try:
+            from supabase import create_client
+            supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        except Exception as e:
+            print(f"Supabase initialization error: {e}")
     return supabase_client
 
 # FastAPI app
 app = FastAPI(
     title="Interview Assistant API",
-    version="2.0.0"
+    version="2.0.0",
+    description="Vercel-compatible interview assistant with AI-powered Q&A"
 )
 
-# CORS middleware
+# CORS middleware - Allow all origins for development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -419,15 +425,15 @@ async def root():
         "version": "2.0.0",
         "endpoints": {
             "health": "/health",
-            "transcribe": "POST /transcribe",
-            "process_question": "POST /process-question",
-            "batch_process": "POST /batch-process",
-            "transcribe_and_answer": "POST /transcribe-and-answer",
-            "process_resume": "POST /process-resume",
-            "process_resumes_bulk": "POST /process-resumes-bulk",
-            "resume_status": "GET /resume-status/{persona_id}",
-            "models": "/models/status",
-            "styles": "/response-styles"
+            "transcribe": "POST /api/transcribe",
+            "process_question": "POST /api/process-question",
+            "batch_process": "POST /api/batch-process",
+            "transcribe_and_answer": "POST /api/transcribe-and-answer",
+            "process_resume": "POST /api/process-resume",
+            "process_resumes_bulk": "POST /api/process-resumes-bulk",
+            "resume_status": "GET /api/resume-status/{persona_id}",
+            "models": "/api/models/status",
+            "styles": "/api/response-styles"
         }
     }
 
@@ -450,7 +456,7 @@ async def health_check():
 # API ENDPOINTS - TRANSCRIPTION
 # ============================================================================
 
-@app.post("/transcribe", response_model=TranscriptResponse)
+@app.post("/api/transcribe", response_model=TranscriptResponse)
 async def transcribe_audio(request: TranscriptRequest):
     """Transcribe audio using Deepgram REST API"""
     try:
@@ -470,7 +476,7 @@ async def transcribe_audio(request: TranscriptRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/process-question", response_model=QuestionProcessResponse)
+@app.post("/api/process-question", response_model=QuestionProcessResponse)
 async def process_question(request: QuestionProcessRequest):
     """Process interview question and generate answer"""
     try:
@@ -488,7 +494,7 @@ async def process_question(request: QuestionProcessRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/batch-process")
+@app.post("/api/batch-process")
 async def batch_process_questions(request: BatchTranscriptRequest):
     """Process multiple questions at once"""
     try:
@@ -510,7 +516,7 @@ async def batch_process_questions(request: BatchTranscriptRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/transcribe-and-answer")
+@app.post("/api/transcribe-and-answer")
 async def transcribe_and_answer(request: Request):
     """One-shot endpoint: Transcribe audio AND generate answer"""
     try:
@@ -558,7 +564,7 @@ async def transcribe_and_answer(request: Request):
 # API ENDPOINTS - RESUME PROCESSING
 # ============================================================================
 
-@app.post("/process-resume", response_model=ProcessResumeResponse)
+@app.post("/api/process-resume", response_model=ProcessResumeResponse)
 async def process_single_resume(request: ProcessResumeRequest):
     """Process a single resume: extract text and generate AI summary"""
     supabase = get_supabase_client()
@@ -626,7 +632,7 @@ async def process_single_resume(request: ProcessResumeRequest):
         )
 
 
-@app.post("/process-resumes-bulk")
+@app.post("/api/process-resumes-bulk")
 async def process_resumes_bulk(request: BulkProcessResumesRequest):
     """Process multiple resumes at once"""
     supabase = get_supabase_client()
@@ -737,7 +743,7 @@ async def process_resumes_bulk(request: BulkProcessResumesRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/resume-status/{persona_id}")
+@app.get("/api/resume-status/{persona_id}")
 async def get_resume_status(persona_id: str):
     """Check if a resume has been processed"""
     supabase = get_supabase_client()
@@ -772,7 +778,7 @@ async def get_resume_status(persona_id: str):
 # API ENDPOINTS - CONFIGURATION
 # ============================================================================
 
-@app.get("/models/status")
+@app.get("/api/models/status")
 async def get_model_status():
     """Get available AI models"""
     return {
@@ -784,7 +790,7 @@ async def get_model_status():
         "configured": OPENAI_API_KEY is not None
     }
 
-@app.get("/response-styles")
+@app.get("/api/response-styles")
 async def get_response_styles():
     """Get available response styles"""
     return {
@@ -799,6 +805,5 @@ async def get_response_styles():
     }
 
 # ============================================================================
-# VERCEL HANDLER - MUST BE AT MODULE LEVEL
+# NO HANDLER HERE! The handler is in api/index.py
 # ============================================================================
-handler = Mangum(app, lifespan="off")
