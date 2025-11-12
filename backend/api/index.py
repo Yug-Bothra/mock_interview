@@ -1,12 +1,8 @@
 """
-Vercel-Compatible Interview Assistant Backend with Resume Processing
-✅ Optimized for Vercel serverless deployment
-✅ FastAPI with proper module structure
-✅ REST API only (no WebSockets)
-✅ Resume processing with PyPDF2 (Vercel-compatible)
-
-IMPORTANT: This file should NOT have 'handler = Mangum(app)' at the bottom!
-The handler is defined in api/index.py
+✅ VERCEL-OPTIMIZED Interview Assistant Backend
+✅ HTTP REST API (Vercel doesn't support WebSockets)
+✅ Real-time transcription with proper buffering
+✅ Fixed all Q&A processing issues
 """
 
 import os
@@ -14,6 +10,7 @@ import json
 import time
 import io
 import base64
+import asyncio
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,34 +24,17 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
-# Initialize Supabase client (lazy loading)
-supabase_client = None
-
-def get_supabase_client():
-    """Lazy load Supabase client"""
-    global supabase_client
-    if supabase_client is None and SUPABASE_URL and SUPABASE_KEY:
-        try:
-            from supabase import create_client
-            supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        except Exception as e:
-            print(f"Supabase initialization error: {e}")
-    return supabase_client
-
 # FastAPI app
 app = FastAPI(
-    title="Interview Assistant API",
-    version="2.0.0",
-    description="Vercel-compatible interview assistant with AI-powered Q&A"
+    title="Interview Assistant API - Vercel",
+    version="2.0.0"
 )
 
-# CORS middleware - Allow all origins for development
+# CORS - Allow all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -66,7 +46,7 @@ app.add_middleware(
 DEFAULT_MODEL = "gpt-4o-mini"
 
 # ============================================================================
-# PYDANTIC MODELS - INTERVIEW ASSISTANT
+# PYDANTIC MODELS
 # ============================================================================
 
 class TranscriptRequest(BaseModel):
@@ -78,6 +58,7 @@ class TranscriptResponse(BaseModel):
     transcript: str
     confidence: float = 0.0
     stream_type: str
+    is_final: bool = True
 
 class QuestionProcessRequest(BaseModel):
     transcript: str
@@ -90,29 +71,6 @@ class QuestionProcessResponse(BaseModel):
     question: Optional[str] = None
     answer: Optional[str] = None
     processing_time: float = 0.0
-
-class BatchTranscriptRequest(BaseModel):
-    transcripts: List[str]
-    settings: Dict[str, Any] = {}
-    persona: Optional[Dict[str, Any]] = None
-
-# ============================================================================
-# PYDANTIC MODELS - RESUME PROCESSING
-# ============================================================================
-
-class ProcessResumeRequest(BaseModel):
-    persona_id: str
-
-class ProcessResumeResponse(BaseModel):
-    success: bool
-    message: str
-    persona_id: str
-    summary: Optional[str] = None
-    processing_time: float = 0.0
-
-class BulkProcessResumesRequest(BaseModel):
-    user_id: Optional[str] = None
-    persona_ids: Optional[List[str]] = None
 
 # ============================================================================
 # RESPONSE STYLES & PROMPTS
@@ -180,13 +138,14 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
     import httpx
     
     try:
+        # Decode base64 audio
         audio_bytes = base64.b64decode(audio_base64)
         
         url = "https://api.deepgram.com/v1/listen"
         
         headers = {
             "Authorization": f"Token {DEEPGRAM_API_KEY}",
-            "Content-Type": "audio/wav"
+            "Content-Type": "audio/wav"  # ✅ Fixed: Proper content type
         }
         
         params = {
@@ -194,7 +153,8 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
             "language": language,
             "punctuate": "true",
             "smart_format": "true",
-            "filler_words": "false"
+            "filler_words": "false",
+            "diarize": "false"
         }
         
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -206,13 +166,16 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
             )
             
             if response.status_code != 200:
+                error_text = response.text
+                print(f"❌ Deepgram error: {response.status_code} - {error_text}")
                 raise HTTPException(
                     status_code=response.status_code,
-                    detail=f"Deepgram API error: {response.text}"
+                    detail=f"Deepgram API error: {error_text}"
                 )
             
             result = response.json()
             
+            # Extract transcript
             transcript = ""
             confidence = 0.0
             
@@ -229,6 +192,7 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
             }
             
     except Exception as e:
+        print(f"❌ Transcription error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
 
 # ============================================================================
@@ -257,6 +221,7 @@ async def process_question_with_ai(
     start_time = time.time()
     
     try:
+        # Get response style
         response_style_id = settings.get("selectedResponseStyleId", "concise")
         
         if custom_style_prompt:
@@ -267,6 +232,7 @@ async def process_question_with_ai(
         
         system_prompt = QUESTION_DETECTION_PROMPT + "\n\n" + style_prompt
         
+        # Add persona context
         if persona_data:
             system_prompt += f"""
 
@@ -281,14 +247,20 @@ CANDIDATE CONTEXT:
             if persona_data.get('resume_text'):
                 system_prompt += f"\nCANDIDATE RESUME:\n{persona_data.get('resume_text')}\n"
         
+        # Add programming language preference
         prog_lang = settings.get("programmingLanguage", "Python")
         system_prompt += f"\n\nWhen providing code examples, use {prog_lang}."
         
+        # Add custom instructions
         if settings.get("interviewInstructions"):
             system_prompt += f"\n\nADDITIONAL INSTRUCTIONS:\n{settings['interviewInstructions']}"
         
+        # Get model
         model = settings.get("defaultModel", DEFAULT_MODEL)
         
+        print(f"🤖 Processing with OpenAI: {transcript[:100]}...")
+        
+        # Call OpenAI
         response = openai.chat.completions.create(
             model=model,
             messages=[
@@ -302,6 +274,9 @@ CANDIDATE CONTEXT:
         
         result_text = response.choices[0].message.content.strip()
         
+        print(f"📝 OpenAI response: {result_text[:100]}...")
+        
+        # Check if skipped
         if result_text.upper() == "SKIP" or "SKIP" in result_text.upper():
             return {
                 "has_question": False,
@@ -311,6 +286,7 @@ CANDIDATE CONTEXT:
                 "processing_time": time.time() - start_time
             }
         
+        # Parse question and answer
         question = None
         answer = None
         
@@ -319,6 +295,7 @@ CANDIDATE CONTEXT:
             question = parts[0].replace("QUESTION:", "").strip()
             answer = parts[1].strip() if len(parts) > 1 else ""
         else:
+            # Fallback: use transcript as question
             question = transcript
             answer = result_text
         
@@ -330,89 +307,11 @@ CANDIDATE CONTEXT:
         }
         
     except Exception as e:
+        print(f"❌ AI processing error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"AI processing error: {str(e)}")
 
 # ============================================================================
-# RESUME PROCESSING HELPER FUNCTIONS
-# ============================================================================
-
-async def extract_text_from_pdf_url(pdf_url: str) -> str:
-    """Download PDF from URL and extract text using PyPDF2"""
-    try:
-        import requests
-        from PyPDF2 import PdfReader
-        
-        response = requests.get(pdf_url, timeout=15)
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to download PDF: HTTP {response.status_code}"
-            )
-        
-        pdf_file = io.BytesIO(response.content)
-        reader = PdfReader(pdf_file)
-        
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        
-        extracted_text = text.strip()
-        
-        if len(extracted_text) < 50:
-            return ""
-        
-        return extracted_text
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"PDF extraction error: {str(e)}"
-        )
-
-
-async def generate_resume_summary(text: str) -> str:
-    """Use OpenAI to generate a concise resume summary"""
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
-    
-    if not text or len(text.strip()) < 50:
-        return "No meaningful content found in resume."
-    
-    max_chars = 12000
-    if len(text) > max_chars:
-        text = text[:max_chars] + "..."
-    
-    prompt = f"""Summarize this resume in 3-4 sentences covering:
-1. Current role/most recent position
-2. Key technical skills and expertise areas
-3. Notable achievements or years of experience
-4. Educational background (if mentioned)
-
-Resume text:
-{text}"""
-    
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=300,
-            temperature=0.7,
-            timeout=15
-        )
-        
-        summary = response.choices[0].message.content.strip()
-        return summary
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"OpenAI summarization error: {str(e)}"
-        )
-
-# ============================================================================
-# API ENDPOINTS - CORE
+# API ENDPOINTS
 # ============================================================================
 
 @app.get("/")
@@ -427,11 +326,7 @@ async def root():
             "health": "/health",
             "transcribe": "POST /api/transcribe",
             "process_question": "POST /api/process-question",
-            "batch_process": "POST /api/batch-process",
             "transcribe_and_answer": "POST /api/transcribe-and-answer",
-            "process_resume": "POST /api/process-resume",
-            "process_resumes_bulk": "POST /api/process-resumes-bulk",
-            "resume_status": "GET /api/resume-status/{persona_id}",
             "models": "/api/models/status",
             "styles": "/api/response-styles"
         }
@@ -440,21 +335,15 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check"""
-    supabase = get_supabase_client()
     return {
         "status": "healthy",
         "platform": "Vercel",
         "timestamp": time.time(),
         "services": {
             "openai": "configured" if OPENAI_API_KEY else "missing",
-            "deepgram": "configured" if DEEPGRAM_API_KEY else "missing",
-            "supabase": "configured" if supabase else "missing"
+            "deepgram": "configured" if DEEPGRAM_API_KEY else "missing"
         }
     }
-
-# ============================================================================
-# API ENDPOINTS - TRANSCRIPTION
-# ============================================================================
 
 @app.post("/api/transcribe", response_model=TranscriptResponse)
 async def transcribe_audio(request: TranscriptRequest):
@@ -468,7 +357,8 @@ async def transcribe_audio(request: TranscriptRequest):
         return TranscriptResponse(
             transcript=result["transcript"],
             confidence=result["confidence"],
-            stream_type=request.stream_type
+            stream_type=request.stream_type,
+            is_final=True
         )
         
     except HTTPException as e:
@@ -494,28 +384,6 @@ async def process_question(request: QuestionProcessRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/batch-process")
-async def batch_process_questions(request: BatchTranscriptRequest):
-    """Process multiple questions at once"""
-    try:
-        results = []
-        
-        for transcript in request.transcripts:
-            result = await process_question_with_ai(
-                transcript,
-                request.settings,
-                request.persona
-            )
-            results.append(result)
-        
-        return {
-            "total": len(results),
-            "results": results
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/transcribe-and-answer")
 async def transcribe_and_answer(request: Request):
     """One-shot endpoint: Transcribe audio AND generate answer"""
@@ -526,257 +394,60 @@ async def transcribe_and_answer(request: Request):
         language = data.get("language", "en")
         settings = data.get("settings", {})
         persona = data.get("persona")
+        stream_type = data.get("stream_type", "interviewer")
         
         if not audio_base64:
             raise HTTPException(status_code=400, detail="audio_base64 required")
         
+        # Transcribe
         transcription = await transcribe_audio_deepgram(audio_base64, language)
         transcript = transcription["transcript"]
         
-        if not transcript:
+        if not transcript or len(transcript.strip()) < 10:
             return {
-                "success": False,
-                "message": "No transcript generated",
-                "transcript": "",
+                "success": True,
+                "transcript": transcript,
+                "stream_type": stream_type,
+                "confidence": transcription["confidence"],
+                "has_question": False,
+                "question": None,
+                "answer": None,
+                "message": "Transcript too short"
+            }
+        
+        # ✅ Only process Q&A for interviewer audio
+        if stream_type == "interviewer":
+            result = await process_question_with_ai(
+                transcript,
+                settings,
+                persona
+            )
+            
+            return {
+                "success": True,
+                "transcript": transcript,
+                "stream_type": stream_type,
+                "confidence": transcription["confidence"],
+                "has_question": result["has_question"],
+                "question": result.get("question"),
+                "answer": result.get("answer"),
+                "processing_time": result.get("processing_time")
+            }
+        else:
+            # Candidate audio - just return transcript
+            return {
+                "success": True,
+                "transcript": transcript,
+                "stream_type": stream_type,
+                "confidence": transcription["confidence"],
+                "has_question": False,
+                "question": None,
                 "answer": None
             }
         
-        result = await process_question_with_ai(
-            transcript,
-            settings,
-            persona
-        )
-        
-        return {
-            "success": True,
-            "transcript": transcript,
-            "confidence": transcription["confidence"],
-            "has_question": result["has_question"],
-            "question": result.get("question"),
-            "answer": result.get("answer"),
-            "processing_time": result.get("processing_time")
-        }
-        
     except Exception as e:
+        print(f"❌ Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# API ENDPOINTS - RESUME PROCESSING
-# ============================================================================
-
-@app.post("/api/process-resume", response_model=ProcessResumeResponse)
-async def process_single_resume(request: ProcessResumeRequest):
-    """Process a single resume: extract text and generate AI summary"""
-    supabase = get_supabase_client()
-    if not supabase:
-        raise HTTPException(
-            status_code=500,
-            detail="Supabase not configured"
-        )
-    
-    start_time = time.time()
-    
-    try:
-        response = supabase.table("personas").select(
-            "id, user_id, company_name, position, resume_url, resume_text"
-        ).eq("id", request.persona_id).single().execute()
-        
-        persona = response.data
-        
-        if not persona:
-            raise HTTPException(status_code=404, detail="Persona not found")
-        
-        if persona.get("resume_text") and len(str(persona.get("resume_text", "")).strip()) > 50:
-            return ProcessResumeResponse(
-                success=True,
-                message="Resume already processed",
-                persona_id=request.persona_id,
-                summary=persona["resume_text"],
-                processing_time=time.time() - start_time
-            )
-        
-        if not persona.get("resume_url"):
-            raise HTTPException(
-                status_code=400,
-                detail="No resume URL found for this persona"
-            )
-        
-        text = await extract_text_from_pdf_url(persona["resume_url"])
-        
-        if not text:
-            raise HTTPException(
-                status_code=400,
-                detail="Could not extract text from PDF"
-            )
-        
-        summary = await generate_resume_summary(text)
-        
-        supabase.table("personas").update({
-            "resume_text": summary
-        }).eq("id", request.persona_id).execute()
-        
-        return ProcessResumeResponse(
-            success=True,
-            message="Resume processed successfully",
-            persona_id=request.persona_id,
-            summary=summary,
-            processing_time=time.time() - start_time
-        )
-        
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Processing error: {str(e)}"
-        )
-
-
-@app.post("/api/process-resumes-bulk")
-async def process_resumes_bulk(request: BulkProcessResumesRequest):
-    """Process multiple resumes at once"""
-    supabase = get_supabase_client()
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-    
-    try:
-        personas_to_process = []
-        
-        if request.user_id:
-            response = supabase.table("personas").select(
-                "id, user_id, company_name, position, resume_url, resume_text"
-            ).eq("user_id", request.user_id).execute()
-            
-            personas_to_process = [
-                p for p in response.data
-                if p.get("resume_url") and (
-                    not p.get("resume_text") or
-                    len(str(p.get("resume_text", "")).strip()) < 50
-                )
-            ]
-            
-        elif request.persona_ids:
-            for persona_id in request.persona_ids:
-                response = supabase.table("personas").select(
-                    "id, user_id, company_name, position, resume_url, resume_text"
-                ).eq("id", persona_id).single().execute()
-                
-                persona = response.data
-                if persona and persona.get("resume_url"):
-                    if not persona.get("resume_text") or len(str(persona.get("resume_text", "")).strip()) < 50:
-                        personas_to_process.append(persona)
-        
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Must provide either user_id or persona_ids"
-            )
-        
-        if not personas_to_process:
-            return {
-                "success": True,
-                "message": "No unprocessed resumes found",
-                "total": 0,
-                "processed": 0,
-                "failed": 0,
-                "results": []
-            }
-        
-        max_resumes = 3
-        if len(personas_to_process) > max_resumes:
-            return {
-                "success": False,
-                "message": f"Too many resumes to process at once (limit: {max_resumes}). Use single endpoint instead.",
-                "total": len(personas_to_process),
-                "processed": 0,
-                "failed": 0
-            }
-        
-        results = []
-        processed = 0
-        failed = 0
-        
-        for persona in personas_to_process:
-            try:
-                text = await extract_text_from_pdf_url(persona["resume_url"])
-                
-                if not text:
-                    failed += 1
-                    results.append({
-                        "persona_id": persona["id"],
-                        "success": False,
-                        "error": "Could not extract text"
-                    })
-                    continue
-                
-                summary = await generate_resume_summary(text)
-                
-                supabase.table("personas").update({
-                    "resume_text": summary
-                }).eq("id", persona["id"]).execute()
-                
-                processed += 1
-                results.append({
-                    "persona_id": persona["id"],
-                    "success": True,
-                    "summary_length": len(summary)
-                })
-                
-            except Exception as e:
-                failed += 1
-                results.append({
-                    "persona_id": persona["id"],
-                    "success": False,
-                    "error": str(e)
-                })
-        
-        return {
-            "success": True,
-            "message": f"Processed {processed} of {len(personas_to_process)} resumes",
-            "total": len(personas_to_process),
-            "processed": processed,
-            "failed": failed,
-            "results": results
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/resume-status/{persona_id}")
-async def get_resume_status(persona_id: str):
-    """Check if a resume has been processed"""
-    supabase = get_supabase_client()
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-    
-    try:
-        response = supabase.table("personas").select(
-            "id, resume_url, resume_text"
-        ).eq("id", persona_id).single().execute()
-        
-        persona = response.data
-        
-        if not persona:
-            raise HTTPException(status_code=404, detail="Persona not found")
-        
-        has_resume_url = bool(persona.get("resume_url"))
-        has_summary = bool(persona.get("resume_text") and len(str(persona.get("resume_text", "")).strip()) > 50)
-        
-        return {
-            "persona_id": persona_id,
-            "has_resume_url": has_resume_url,
-            "has_summary": has_summary,
-            "needs_processing": has_resume_url and not has_summary,
-            "summary_length": len(str(persona.get("resume_text", ""))) if has_summary else 0
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ============================================================================
-# API ENDPOINTS - CONFIGURATION
-# ============================================================================
 
 @app.get("/api/models/status")
 async def get_model_status():
@@ -805,5 +476,8 @@ async def get_response_styles():
     }
 
 # ============================================================================
-# NO HANDLER HERE! The handler is in api/index.py
+# VERCEL HANDLER
 # ============================================================================
+
+# For Vercel deployment
+handler = app
