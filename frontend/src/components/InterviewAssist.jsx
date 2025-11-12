@@ -30,10 +30,12 @@ console.log('🔗 Backend URL:', BACKEND_URL);
 // WAV FILE CREATION UTILITY
 // ============================================================================
 
-/**
- * Create a proper WAV file from PCM16 audio data
- * Deepgram requires a valid WAV file with headers
- */
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
 function createWavFile(pcmData, sampleRate = 16000) {
   const numChannels = 1;
   const bitsPerSample = 16;
@@ -74,12 +76,6 @@ function createWavFile(pcmData, sampleRate = 16000) {
   return new Uint8Array(wavBuffer);
 }
 
-function writeString(view, offset, string) {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-}
-
 // ============================================================================
 // AUDIO BUFFER MANAGER (Client-side batching for HTTP API)
 // ============================================================================
@@ -112,7 +108,7 @@ class AudioBufferManager {
     clearTimeout(this.timer);
     this.timer = null;
 
-    const dataToSend = [...this.buffer];
+    const dataToSend = new Int16Array([...this.buffer]);
     this.buffer = [];
 
     try {
@@ -143,17 +139,15 @@ class AudioBufferManager {
 // API FUNCTIONS (HTTP POST instead of WebSocket)
 // ============================================================================
 
-async function transcribeAudio(audioData, streamType, language = 'en') {
+async function transcribeAudio(pcmData, streamType, language = 'en') {
   try {
-    // Convert Int16Array PCM data to WAV file
-    const wavData = createWavFile(audioData, 16000);
+    // Convert PCM16 to WAV file with proper headers
+    const wavData = createWavFile(pcmData, 16000);
     
     // Convert WAV to base64
-    const base64Audio = btoa(
-      String.fromCharCode(...wavData)
-    );
+    const base64Audio = btoa(String.fromCharCode(...wavData));
 
-    console.log(`📤 Sending ${streamType} audio: ${wavData.length} bytes (WAV format)`);
+    console.log(`📤 Sending ${streamType} audio: ${wavData.length} bytes (${pcmData.length} samples)`);
 
     const response = await fetch(`${BACKEND_URL}/api/transcribe`, {
       method: 'POST',
@@ -505,19 +499,14 @@ export default function InterviewAssist() {
     };
     const language = languageMap[settings.audioLanguage] || "en";
 
-    // Set loading state
     if (streamType === 'candidate') {
       setCurrentCandidateParagraph('Processing...');
     } else {
       setCurrentInterviewerParagraph('Processing...');
     }
 
-    // audioData is already an array of PCM16 values, convert to Int16Array
-    const pcm16Array = new Int16Array(audioData);
-
-    // Pass Int16Array to transcribeAudio which will create WAV file
     const result = await transcribeAudio(
-      pcm16Array,
+      audioData, // Pass Int16Array directly
       streamType,
       language
     );
@@ -525,7 +514,6 @@ export default function InterviewAssist() {
     if (result && result.transcript) {
       handleTranscriptFromAPI(result.transcript, streamType);
     } else {
-      // Clear loading state on failure
       if (streamType === 'candidate') {
         setCurrentCandidateParagraph('');
       } else {
@@ -882,7 +870,7 @@ export default function InterviewAssist() {
                 {personaData ? `${personaData.position} @ ${personaData.company_name}` : "Interview Assistant"}
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                Vercel Edition - HTTP API with WAV Encoding
+                Vercel Edition - HTTP API (WAV Fixed)
               </p>
             </div>
           </div>
@@ -1309,13 +1297,12 @@ export default function InterviewAssist() {
               </div>
 
               <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4">
-                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Vercel HTTP Edition</h4>
+                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Vercel HTTP Edition (WAV Fixed)</h4>
                 <ul className="text-gray-400 text-sm space-y-1 list-disc list-inside">
-                  <li>HTTP POST API (no WebSockets)</li>
-                  <li>WAV format with proper headers</li>
+                  <li>HTTP POST API with proper WAV encoding</li>
                   <li>~{settings.pauseInterval}s buffered transcription</li>
+                  <li>Fixed Deepgram audio format error</li>
                   <li>Serverless auto-scaling</li>
-                  <li>Zero infrastructure management</li>
                 </ul>
               </div>
 
