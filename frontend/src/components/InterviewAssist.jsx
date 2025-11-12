@@ -22,7 +22,7 @@ import { jsPDF } from "jspdf";
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 
   (window.location.hostname === 'localhost' 
     ? 'http://localhost:8000' 
-    : 'https://your-vercel-backend.vercel.app'); // ✅ Update this
+    : 'https://mock-interview-ybuf.vercel.app');
 
 console.log('🔗 Backend URL:', BACKEND_URL);
 
@@ -41,29 +41,33 @@ function createWavFile(pcmData, sampleRate = 16000) {
   const bitsPerSample = 16;
   const byteRate = sampleRate * numChannels * bitsPerSample / 8;
   const blockAlign = numChannels * bitsPerSample / 8;
-  const dataSize = pcmData.length * 2;
+  const dataSize = pcmData.length * 2; // 2 bytes per sample for 16-bit
   
+  // Create WAV file buffer
   const wavBuffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(wavBuffer);
   
-  // WAV header
+  // Write WAV header
+  // "RIFF" chunk descriptor
   writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
+  view.setUint32(4, 36 + dataSize, true); // File size - 8
   writeString(view, 8, 'WAVE');
   
+  // "fmt " sub-chunk
   writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitsPerSample, true);
+  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+  view.setUint16(22, numChannels, true); // NumChannels
+  view.setUint32(24, sampleRate, true); // SampleRate
+  view.setUint32(28, byteRate, true); // ByteRate
+  view.setUint16(32, blockAlign, true); // BlockAlign
+  view.setUint16(34, bitsPerSample, true); // BitsPerSample
   
+  // "data" sub-chunk
   writeString(view, 36, 'data');
-  view.setUint32(40, dataSize, true);
+  view.setUint32(40, dataSize, true); // Subchunk2Size
   
-  // PCM data
+  // Write PCM data
   const offset = 44;
   for (let i = 0; i < pcmData.length; i++) {
     view.setInt16(offset + i * 2, pcmData[i], true);
@@ -73,11 +77,11 @@ function createWavFile(pcmData, sampleRate = 16000) {
 }
 
 // ============================================================================
-// AUDIO BUFFER MANAGER
+// AUDIO BUFFER MANAGER (Client-side batching for HTTP API)
 // ============================================================================
 
 class AudioBufferManager {
-  constructor(onFlush, streamType, bufferDuration = 1500) {  // ✅ Reduced from 2000ms to 1500ms
+  constructor(onFlush, streamType, bufferDuration = 2000) {
     this.buffer = [];
     this.streamType = streamType;
     this.onFlush = onFlush;
@@ -85,8 +89,6 @@ class AudioBufferManager {
     this.timer = null;
     this.isProcessing = false;
     this.isPaused = false;
-    this.lastFlushTime = 0;
-    this.minFlushInterval = 800;  // ✅ Minimum 800ms between flushes
   }
 
   add(audioData) {
@@ -100,18 +102,9 @@ class AudioBufferManager {
   }
 
   async flush() {
-    const now = Date.now();
-    if (this.isProcessing || this.buffer.length === 0 || this.isPaused) {
-      return;
-    }
-
-    // ✅ Rate limiting: prevent too frequent flushes
-    if (now - this.lastFlushTime < this.minFlushInterval) {
-      return;
-    }
+    if (this.isProcessing || this.buffer.length === 0 || this.isPaused) return;
     
     this.isProcessing = true;
-    this.lastFlushTime = now;
     clearTimeout(this.timer);
     this.timer = null;
 
@@ -121,7 +114,7 @@ class AudioBufferManager {
     try {
       await this.onFlush(dataToSend, this.streamType);
     } catch (error) {
-      console.error('❌ Flush error:', error);
+      console.error('Flush error:', error);
     } finally {
       this.isProcessing = false;
     }
@@ -129,10 +122,6 @@ class AudioBufferManager {
 
   pause() {
     this.isPaused = true;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
   }
 
   resume() {
@@ -143,45 +132,73 @@ class AudioBufferManager {
     clearTimeout(this.timer);
     this.buffer = [];
     this.isProcessing = false;
-    this.timer = null;
   }
 }
 
 // ============================================================================
-// API FUNCTIONS
+// API FUNCTIONS (HTTP POST instead of WebSocket)
 // ============================================================================
 
-async function transcribeAndProcess(pcmData, streamType, language = 'en', settings = {}, persona = null) {
+async function transcribeAudio(pcmData, streamType, language = 'en') {
   try {
+    // Convert PCM16 to WAV file with proper headers
     const wavData = createWavFile(pcmData, 16000);
+    
+    // Convert WAV to base64
     const base64Audio = btoa(String.fromCharCode(...wavData));
 
-    console.log(`📤 Sending ${streamType} audio: ${wavData.length} bytes`);
+    console.log(`📤 Sending ${streamType} audio: ${wavData.length} bytes (${pcmData.length} samples)`);
 
-    const response = await fetch(`${BACKEND_URL}/api/transcribe-and-answer`, {
+    const response = await fetch(`${BACKEND_URL}/api/transcribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         audio_base64: base64Audio,
         language: language,
-        stream_type: streamType,
-        settings: settings,
-        persona: persona
+        stream_type: streamType
       })
     });
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('❌ API error:', errorData);
+      console.error('❌ Transcription error:', errorData);
       return null;
     }
 
     const data = await response.json();
-    console.log(`✅ ${streamType} response:`, data);
+    console.log('✅ Transcription received:', data.transcript?.substring(0, 50) + '...');
     return data;
 
   } catch (error) {
-    console.error('❌ API fetch error:', error);
+    console.error('❌ Transcription fetch error:', error);
+    return null;
+  }
+}
+
+async function processQuestion(transcript, settings, personaData) {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/process-question`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcript: transcript,
+        settings: settings,
+        persona: personaData
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('❌ Question processing error:', errorData);
+      return null;
+    }
+
+    const data = await response.json();
+    console.log('✅ Q&A result:', data.has_question ? 'Question found' : 'No question');
+    return data;
+
+  } catch (error) {
+    console.error('❌ Question processing fetch error:', error);
     return null;
   }
 }
@@ -320,7 +337,7 @@ export default function InterviewAssist() {
         : {
           responseStyle: "professional",
           audioLanguage: "English",
-          pauseInterval: 1.5,  // ✅ Reduced from 2.0
+          pauseInterval: 2.0,
           advancedQuestionDetection: true,
           messageDirection: "bottom",
           autoScroll: true,
@@ -332,7 +349,7 @@ export default function InterviewAssist() {
       return {
         responseStyle: "professional",
         audioLanguage: "English",
-        pauseInterval: 1.5,
+        pauseInterval: 2.0,
         advancedQuestionDetection: true,
         messageDirection: "bottom",
         autoScroll: true,
@@ -362,6 +379,9 @@ export default function InterviewAssist() {
 
   const [currentCandidateParagraph, setCurrentCandidateParagraph] = useState("");
   const [currentInterviewerParagraph, setCurrentInterviewerParagraph] = useState("");
+  
+  const [currentCandidateInterim, setCurrentCandidateInterim] = useState("");
+  const [currentInterviewerInterim, setCurrentInterviewerInterim] = useState("");
 
   const candidateStreamRef = useRef(null);
   const interviewerStreamRef = useRef(null);
@@ -373,9 +393,6 @@ export default function InterviewAssist() {
   const interviewerBufferManagerRef = useRef(null);
   const transcriptEndRef = useRef(null);
   const copilotEndRef = useRef(null);
-
-  // ✅ Track processed questions to prevent duplicates
-  const processedQuestionsRef = useRef(new Set());
 
   // ============================================================================
   // AUTH CHECK
@@ -393,7 +410,7 @@ export default function InterviewAssist() {
     if (settings.autoScroll) {
       transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [candidateTranscript, interviewerTranscript, currentCandidateParagraph, currentInterviewerParagraph, settings.autoScroll]);
+  }, [candidateTranscript, interviewerTranscript, currentCandidateParagraph, currentInterviewerParagraph, currentCandidateInterim, currentInterviewerInterim, settings.autoScroll]);
 
   useEffect(() => {
     if (settings.autoScroll) {
@@ -402,21 +419,12 @@ export default function InterviewAssist() {
   }, [qaList, currentAnswer, settings.autoScroll]);
 
   // ============================================================================
-  // TRANSCRIPT HANDLING
+  // TRANSCRIPT HANDLING (HTTP API)
   // ============================================================================
 
-  const handleTranscriptFromAPI = (result, streamType) => {
-    if (!result || !result.transcript || !result.transcript.trim()) {
-      // ✅ Clear processing state
-      if (streamType === 'candidate') {
-        setCurrentCandidateParagraph('');
-      } else {
-        setCurrentInterviewerParagraph('');
-      }
-      return;
-    }
+  const handleTranscriptFromAPI = (transcript, streamType) => {
+    if (!transcript || !transcript.trim()) return;
 
-    const transcript = result.transcript.trim();
     const timestamp = new Date().toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
@@ -438,46 +446,46 @@ export default function InterviewAssist() {
       setCurrentInterviewerParagraph('');
       console.log('📝 Interviewer:', transcript.substring(0, 50) + '...');
       
-      // ✅ Process Q&A if available
-      if (result.has_question && result.answer) {
-        handleQuestionAnswer(result.question, result.answer);
-      }
+      handleQuestionProcessing(transcript);
     }
   };
 
-  const handleQuestionAnswer = (question, answer) => {
-    // ✅ Prevent duplicate processing
-    const questionKey = question.trim().toLowerCase();
-    if (processedQuestionsRef.current.has(questionKey)) {
-      console.log('⏭️ Skipping duplicate question');
-      return;
-    }
-
-    processedQuestionsRef.current.add(questionKey);
-    console.log('✅ New question detected:', question.substring(0, 50) + '...');
-
-    setIsGenerating(true);
-    setCurrentQuestion(question);
-    setCurrentAnswer(answer);
-    setIsStreamingComplete(false);
-
-    const streamingDuration = answer.length * 20 + 500;
-
-    setTimeout(() => {
-      setIsStreamingComplete(true);
+  const handleQuestionProcessing = async (transcript) => {
+    try {
+      setIsGenerating(true);
       
-      addQA({
-        question: question,
-        answer: answer
-      });
-
-      setTimeout(() => {
-        setCurrentQuestion("");
-        setCurrentAnswer("");
+      const result = await processQuestion(transcript, settings, personaData);
+      
+      if (result && result.has_question && result.answer) {
+        console.log('✅ Answer generated');
+        
+        setCurrentQuestion(result.question);
+        setCurrentAnswer(result.answer);
         setIsStreamingComplete(false);
-        setIsGenerating(false);
-      }, 1000);
-    }, streamingDuration);
+
+        const streamingDuration = result.answer.length * 20 + 500;
+
+        setTimeout(() => {
+          setIsStreamingComplete(true);
+          
+          addQA({
+            question: result.question,
+            answer: result.answer
+          });
+
+          setTimeout(() => {
+            setCurrentQuestion("");
+            setCurrentAnswer("");
+            setIsStreamingComplete(false);
+          }, 1000);
+        }, streamingDuration);
+      }
+
+    } catch (error) {
+      console.error('❌ Q&A processing error:', error);
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const flushAudioBuffer = async (audioData, streamType) => {
@@ -491,22 +499,27 @@ export default function InterviewAssist() {
     };
     const language = languageMap[settings.audioLanguage] || "en";
 
-    // ✅ Show processing state
     if (streamType === 'candidate') {
       setCurrentCandidateParagraph('Processing...');
     } else {
       setCurrentInterviewerParagraph('Processing...');
     }
 
-    const result = await transcribeAndProcess(
-      audioData,
+    const result = await transcribeAudio(
+      audioData, // Pass Int16Array directly
       streamType,
-      language,
-      settings,
-      personaData
+      language
     );
 
-    handleTranscriptFromAPI(result, streamType);
+    if (result && result.transcript) {
+      handleTranscriptFromAPI(result.transcript, streamType);
+    } else {
+      if (streamType === 'candidate') {
+        setCurrentCandidateParagraph('');
+      } else {
+        setCurrentInterviewerParagraph('');
+      }
+    }
   };
 
   // ============================================================================
@@ -539,7 +552,7 @@ export default function InterviewAssist() {
       candidateBufferManagerRef.current = new AudioBufferManager(
         flushAudioBuffer,
         'candidate',
-        settings.pauseInterval * 1000 || 1500
+        settings.pauseInterval * 1000 || 2000
       );
 
       processor.onaudioprocess = (e) => {
@@ -615,7 +628,7 @@ export default function InterviewAssist() {
       interviewerBufferManagerRef.current = new AudioBufferManager(
         flushAudioBuffer,
         'interviewer',
-        settings.pauseInterval * 1000 || 1500
+        settings.pauseInterval * 1000 || 2000
       );
 
       processor.onaudioprocess = (e) => {
@@ -653,7 +666,6 @@ export default function InterviewAssist() {
   };
 
   const stopAllCapture = () => {
-    // Flush any remaining data
     if (candidateBufferManagerRef.current) {
       candidateBufferManagerRef.current.flush();
       candidateBufferManagerRef.current.clear();
@@ -666,7 +678,6 @@ export default function InterviewAssist() {
       interviewerBufferManagerRef.current = null;
     }
 
-    // Stop all audio processing
     if (candidateProcessorRef.current) {
       candidateProcessorRef.current.disconnect();
       candidateProcessorRef.current = null;
@@ -695,6 +706,8 @@ export default function InterviewAssist() {
 
     setCurrentCandidateParagraph('');
     setCurrentInterviewerParagraph('');
+    setCurrentCandidateInterim('');
+    setCurrentInterviewerInterim('');
 
     console.log('✓ All capture stopped');
   };
@@ -720,9 +733,6 @@ export default function InterviewAssist() {
       setTabAudioError("");
       setDeepgramStatus("Starting...");
       setQaStatus("Starting...");
-      
-      // ✅ Clear processed questions set
-      processedQuestionsRef.current.clear();
 
       await startMicrophoneCapture();
       setShowTabModal(true);
@@ -744,9 +754,6 @@ export default function InterviewAssist() {
     setIsRecording(false);
     setDeepgramStatus("Stopped");
     setQaStatus("Stopped");
-    
-    // ✅ Clear processed questions
-    processedQuestionsRef.current.clear();
   };
 
   const handleTabAudioSelection = async () => {
@@ -840,6 +847,7 @@ export default function InterviewAssist() {
 
   const currentTranscript = activeView === "interviewer" ? interviewerTranscript : candidateTranscript;
   const currentParagraph = activeView === "interviewer" ? currentInterviewerParagraph : currentCandidateParagraph;
+  const currentInterim = activeView === "interviewer" ? currentInterviewerInterim : currentCandidateInterim;
 
   // ============================================================================
   // RENDER
@@ -847,7 +855,7 @@ export default function InterviewAssist() {
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col">
-      {/* Header - same as before */}
+      {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-4">
@@ -862,7 +870,7 @@ export default function InterviewAssist() {
                 {personaData ? `${personaData.position} @ ${personaData.company_name}` : "Interview Assistant"}
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                Vercel Edition - HTTP API (Fixed)
+                Vercel Edition - HTTP API (WAV Fixed)
               </p>
             </div>
           </div>
@@ -987,7 +995,7 @@ export default function InterviewAssist() {
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* LEFT: Transcription */}
+        {/* LEFT: Deepgram Dual-Stream Transcription */}
         <div className="w-1/2 border-r border-gray-800 flex flex-col">
           <div className="bg-gray-900 border-b border-gray-800 flex items-center">
             <button
@@ -1036,7 +1044,7 @@ export default function InterviewAssist() {
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-            {currentTranscript.length === 0 && !currentParagraph ? (
+            {currentTranscript.length === 0 && !currentParagraph && !currentInterim ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="mb-4">
@@ -1289,12 +1297,11 @@ export default function InterviewAssist() {
               </div>
 
               <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4">
-                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Vercel HTTP Edition (FIXED)</h4>
+                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Vercel HTTP Edition (WAV Fixed)</h4>
                 <ul className="text-gray-400 text-sm space-y-1 list-disc list-inside">
-                  <li>Proper WAV encoding for Deepgram</li>
-                  <li>Fixed Q&A processing for interviewer audio</li>
-                  <li>Duplicate question prevention</li>
-                  <li>Optimized buffer timing (1.5s)</li>
+                  <li>HTTP POST API with proper WAV encoding</li>
+                  <li>~{settings.pauseInterval}s buffered transcription</li>
+                  <li>Fixed Deepgram audio format error</li>
                   <li>Serverless auto-scaling</li>
                 </ul>
               </div>
@@ -1312,3 +1319,7 @@ export default function InterviewAssist() {
     </div>
   );
 }
+
+
+
+
