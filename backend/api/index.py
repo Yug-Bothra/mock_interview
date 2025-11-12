@@ -7,24 +7,49 @@ Vercel-Compatible Interview Assistant Backend - COMPLETE VERSION
 """
 
 import os
+import sys
 import json
 import time
 import io
 import base64
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
-import openai
+
+# Print Python version for debugging
+print(f"Python version: {sys.version}", flush=True)
+
+try:
+    from fastapi import FastAPI, HTTPException, Request
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
+    from pydantic import BaseModel
+    print("✅ FastAPI imports successful", flush=True)
+except ImportError as e:
+    print(f"❌ FastAPI import error: {e}", flush=True)
+    raise
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ dotenv loaded", flush=True)
+except ImportError:
+    print("⚠️ python-dotenv not available, using environment variables directly", flush=True)
+
+try:
+    import openai
+    print("✅ OpenAI imported", flush=True)
+except ImportError as e:
+    print(f"❌ OpenAI import error: {e}", flush=True)
+    raise
 
 # Load environment variables
-load_dotenv()
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+print(f"🔑 OPENAI_API_KEY: {'✅ Set' if OPENAI_API_KEY else '❌ Missing'}", flush=True)
+print(f"🔑 DEEPGRAM_API_KEY: {'✅ Set' if DEEPGRAM_API_KEY else '❌ Missing'}", flush=True)
+print(f"🔑 SUPABASE_URL: {'✅ Set' if SUPABASE_URL else '❌ Missing'}", flush=True)
 
 if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
@@ -38,8 +63,9 @@ def get_supabase_client():
         try:
             from supabase import create_client
             supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+            print("✅ Supabase client initialized", flush=True)
         except Exception as e:
-            print(f"Supabase initialization error: {e}")
+            print(f"❌ Supabase initialization error: {e}", flush=True)
     return supabase_client
 
 # FastAPI app
@@ -49,6 +75,8 @@ app = FastAPI(
     description="Vercel-compatible interview assistant with real-time features"
 )
 
+print("✅ FastAPI app created", flush=True)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -56,6 +84,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+print("✅ CORS middleware added", flush=True)
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -169,7 +199,12 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
     if not DEEPGRAM_API_KEY:
         raise HTTPException(status_code=500, detail="DEEPGRAM_API_KEY not configured")
     
-    import httpx
+    try:
+        import httpx
+        print("✅ httpx imported for Deepgram", flush=True)
+    except ImportError as e:
+        print(f"❌ httpx import error: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"httpx not available: {str(e)}")
     
     try:
         # Decode base64 to bytes
@@ -203,7 +238,7 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
             
             if response.status_code != 200:
                 error_detail = response.text
-                print(f"❌ Deepgram error: {error_detail}")
+                print(f"❌ Deepgram error: {error_detail}", flush=True)
                 raise HTTPException(
                     status_code=response.status_code,
                     detail=f"Deepgram API error: {error_detail}"
@@ -221,7 +256,7 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
                     transcript = alternatives[0].get("transcript", "")
                     confidence = alternatives[0].get("confidence", 0.0)
             
-            print(f"✅ Transcription successful: {transcript[:50]}... (confidence: {confidence:.2f})")
+            print(f"✅ Transcription successful: {transcript[:50]}... (confidence: {confidence:.2f})", flush=True)
             
             return {
                 "transcript": transcript,
@@ -232,7 +267,7 @@ async def transcribe_audio_deepgram(audio_base64: str, language: str = "en") -> 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Transcription error: {e}")
+        print(f"❌ Transcription error: {e}", flush=True)
         raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
 
 # ============================================================================
@@ -367,8 +402,13 @@ async def extract_text_from_pdf_url(pdf_url: str) -> str:
     try:
         import requests
         from PyPDF2 import PdfReader
-        
-        print(f"📄 Downloading PDF from: {pdf_url[:100]}...")
+        print("✅ PDF libraries imported", flush=True)
+    except ImportError as e:
+        print(f"❌ PDF import error: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"PDF libraries not available: {str(e)}")
+    
+    try:
+        print(f"📄 Downloading PDF from: {pdf_url[:100]}...", flush=True)
         
         response = requests.get(pdf_url, timeout=15)
         if response.status_code != 200:
@@ -377,7 +417,7 @@ async def extract_text_from_pdf_url(pdf_url: str) -> str:
                 detail=f"Failed to download PDF: HTTP {response.status_code}"
             )
         
-        print(f"✅ PDF downloaded, size: {len(response.content)} bytes")
+        print(f"✅ PDF downloaded, size: {len(response.content)} bytes", flush=True)
         
         pdf_file = io.BytesIO(response.content)
         reader = PdfReader(pdf_file)
@@ -387,19 +427,19 @@ async def extract_text_from_pdf_url(pdf_url: str) -> str:
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
-                print(f"✅ Extracted page {page_num}, length: {len(page_text)}")
+                print(f"✅ Extracted page {page_num}, length: {len(page_text)}", flush=True)
         
         extracted_text = text.strip()
         
         if len(extracted_text) < 50:
-            print("❌ Extracted text too short")
+            print("❌ Extracted text too short", flush=True)
             return ""
         
-        print(f"✅ Total extracted text length: {len(extracted_text)}")
+        print(f"✅ Total extracted text length: {len(extracted_text)}", flush=True)
         return extracted_text
         
     except Exception as e:
-        print(f"❌ PDF extraction error: {e}")
+        print(f"❌ PDF extraction error: {e}", flush=True)
         raise HTTPException(
             status_code=500,
             detail=f"PDF extraction error: {str(e)}"
