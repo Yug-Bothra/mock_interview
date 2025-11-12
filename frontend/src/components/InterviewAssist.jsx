@@ -16,18 +16,18 @@ import {
 import { jsPDF } from "jspdf";
 
 // ============================================================================
-// BACKEND URL CONFIGURATION - VERCEL
+// BACKEND URL CONFIGURATION
 // ============================================================================
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 
   (window.location.hostname === 'localhost' 
     ? 'http://localhost:8000' 
-    : 'https://mock-interview-ybuf.vercel.app');
+    : 'https://your-backend.vercel.app');
 
 console.log('🔗 Backend URL:', BACKEND_URL);
 
 // ============================================================================
-// WAV FILE CREATION UTILITY
+// WAV FILE CREATION
 // ============================================================================
 
 function writeString(view, offset, string) {
@@ -41,33 +41,28 @@ function createWavFile(pcmData, sampleRate = 16000) {
   const bitsPerSample = 16;
   const byteRate = sampleRate * numChannels * bitsPerSample / 8;
   const blockAlign = numChannels * bitsPerSample / 8;
-  const dataSize = pcmData.length * 2; // 2 bytes per sample for 16-bit
+  const dataSize = pcmData.length * 2;
   
-  // Create WAV file buffer
   const wavBuffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(wavBuffer);
   
-  // Write WAV header
-  // "RIFF" chunk descriptor
+  // WAV header
   writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true); // File size - 8
+  view.setUint32(4, 36 + dataSize, true);
   writeString(view, 8, 'WAVE');
   
-  // "fmt " sub-chunk
   writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
-  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
-  view.setUint16(22, numChannels, true); // NumChannels
-  view.setUint32(24, sampleRate, true); // SampleRate
-  view.setUint32(28, byteRate, true); // ByteRate
-  view.setUint16(32, blockAlign, true); // BlockAlign
-  view.setUint16(34, bitsPerSample, true); // BitsPerSample
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
   
-  // "data" sub-chunk
   writeString(view, 36, 'data');
-  view.setUint32(40, dataSize, true); // Subchunk2Size
+  view.setUint32(40, dataSize, true);
   
-  // Write PCM data
   const offset = 44;
   for (let i = 0; i < pcmData.length; i++) {
     view.setInt16(offset + i * 2, pcmData[i], true);
@@ -77,7 +72,7 @@ function createWavFile(pcmData, sampleRate = 16000) {
 }
 
 // ============================================================================
-// AUDIO BUFFER MANAGER (Client-side batching for HTTP API)
+// AUDIO BUFFER MANAGER
 // ============================================================================
 
 class AudioBufferManager {
@@ -136,18 +131,15 @@ class AudioBufferManager {
 }
 
 // ============================================================================
-// API FUNCTIONS (HTTP POST instead of WebSocket)
+// API FUNCTIONS
 // ============================================================================
 
 async function transcribeAudio(pcmData, streamType, language = 'en') {
   try {
-    // Convert PCM16 to WAV file with proper headers
     const wavData = createWavFile(pcmData, 16000);
-    
-    // Convert WAV to base64
     const base64Audio = btoa(String.fromCharCode(...wavData));
 
-    console.log(`📤 Sending ${streamType} audio: ${wavData.length} bytes (${pcmData.length} samples)`);
+    console.log(`📤 Sending ${streamType} audio: ${wavData.length} bytes`);
 
     const response = await fetch(`${BACKEND_URL}/api/transcribe`, {
       method: 'POST',
@@ -177,6 +169,8 @@ async function transcribeAudio(pcmData, streamType, language = 'en') {
 
 async function processQuestion(transcript, settings, personaData) {
   try {
+    console.log('📝 Processing question:', transcript.substring(0, 50) + '...');
+
     const response = await fetch(`${BACKEND_URL}/api/process-question`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -206,37 +200,6 @@ async function processQuestion(transcript, settings, personaData) {
 // ============================================================================
 // STREAMING COMPONENTS
 // ============================================================================
-
-function StreamingText({ text, isComplete, className = "" }) {
-  const [displayedWords, setDisplayedWords] = useState([]);
-  const [currentWordIndex, setCurrentWordIndex] = useState(0);
-
-  useEffect(() => {
-    if (isComplete) {
-      setDisplayedWords(text.split(' '));
-      return;
-    }
-
-    const words = text.split(' ');
-    if (currentWordIndex < words.length) {
-      const timer = setTimeout(() => {
-        setDisplayedWords(words.slice(0, currentWordIndex + 1));
-        setCurrentWordIndex(currentWordIndex + 1);
-      }, 80);
-
-      return () => clearTimeout(timer);
-    }
-  }, [text, currentWordIndex, isComplete]);
-
-  return (
-    <p className={`whitespace-pre-wrap leading-relaxed ${className}`}>
-      {displayedWords.join(' ')}
-      {!isComplete && currentWordIndex < text.split(' ').length && (
-        <span className="inline-block w-1 h-4 bg-blue-400 ml-1 animate-pulse"></span>
-      )}
-    </p>
-  );
-}
 
 function StreamingAnswer({ text, isComplete }) {
   const [displayedText, setDisplayedText] = useState("");
@@ -275,31 +238,27 @@ function StreamingAnswer({ text, isComplete }) {
 function QAList({ qaList }) {
   return (
     <div className="space-y-4">
-      {qaList.map((item, index) => {
-        const questionNumber = index + 1;
-
-        return (
-          <div key={item.id} className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors">
-            <div className="mb-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-purple-400 bg-purple-900/30 px-2 py-1 rounded">
-                  ❓ QUESTION #{questionNumber}
-                </span>
-              </div>
-              <p className="text-gray-200 font-medium leading-relaxed">{item.question}</p>
+      {qaList.map((item, index) => (
+        <div key={item.id} className="bg-gray-900 rounded-lg p-4 border border-gray-800 hover:border-gray-700 transition-colors">
+          <div className="mb-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-semibold text-purple-400 bg-purple-900/30 px-2 py-1 rounded">
+                ❓ QUESTION #{index + 1}
+              </span>
             </div>
-
-            <div className="border-t border-gray-800 pt-3 mt-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-green-400 bg-green-900/30 px-2 py-1 rounded">💬 ANSWER</span>
-              </div>
-              <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">
-                {item.answer}
-              </p>
-            </div>
+            <p className="text-gray-200 font-medium leading-relaxed">{item.question}</p>
           </div>
-        );
-      })}
+
+          <div className="border-t border-gray-800 pt-3 mt-3">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-semibold text-green-400 bg-green-900/30 px-2 py-1 rounded">💬 ANSWER</span>
+            </div>
+            <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">
+              {item.answer}
+            </p>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -313,6 +272,7 @@ export default function InterviewAssist() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
 
+  // State from location/localStorage
   const [personaId] = useState(
     location.state?.personaId || localStorage.getItem("selectedPersona") || null
   );
@@ -332,19 +292,17 @@ export default function InterviewAssist() {
     if (location.state?.settings) return location.state.settings;
     const saved = localStorage.getItem("copilotSettings");
     try {
-      return saved
-        ? JSON.parse(saved)
-        : {
-          responseStyle: "professional",
-          audioLanguage: "English",
-          pauseInterval: 2.0,
-          advancedQuestionDetection: true,
-          messageDirection: "bottom",
-          autoScroll: true,
-          programmingLanguage: "Python",
-          selectedResponseStyleId: "concise",
-          defaultModel: "gpt-4o-mini"
-        };
+      return saved ? JSON.parse(saved) : {
+        responseStyle: "professional",
+        audioLanguage: "English",
+        pauseInterval: 2.0,
+        advancedQuestionDetection: true,
+        messageDirection: "bottom",
+        autoScroll: true,
+        programmingLanguage: "Python",
+        selectedResponseStyleId: "concise",
+        defaultModel: "gpt-4o-mini"
+      };
     } catch {
       return {
         responseStyle: "professional",
@@ -360,6 +318,7 @@ export default function InterviewAssist() {
     }
   });
 
+  // Component states
   const [isRecording, setIsRecording] = useState(false);
   const [qaList, setQaList] = useState([]);
   const [candidateTranscript, setCandidateTranscript] = useState([]);
@@ -372,17 +331,17 @@ export default function InterviewAssist() {
   const [showTabModal, setShowTabModal] = useState(false);
   const [tabAudioError, setTabAudioError] = useState("");
 
+  // Current Q&A
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [currentAnswer, setCurrentAnswer] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isStreamingComplete, setIsStreamingComplete] = useState(false);
 
+  // Processing indicators
   const [currentCandidateParagraph, setCurrentCandidateParagraph] = useState("");
   const [currentInterviewerParagraph, setCurrentInterviewerParagraph] = useState("");
-  
-  const [currentCandidateInterim, setCurrentCandidateInterim] = useState("");
-  const [currentInterviewerInterim, setCurrentInterviewerInterim] = useState("");
 
+  // Refs
   const candidateStreamRef = useRef(null);
   const interviewerStreamRef = useRef(null);
   const candidateAudioContextRef = useRef(null);
@@ -397,6 +356,7 @@ export default function InterviewAssist() {
   // ============================================================================
   // AUTH CHECK
   // ============================================================================
+  
   useEffect(() => {
     if (!loading && !user) {
       navigate("/sign-in");
@@ -406,11 +366,12 @@ export default function InterviewAssist() {
   // ============================================================================
   // AUTO-SCROLL
   // ============================================================================
+  
   useEffect(() => {
     if (settings.autoScroll) {
       transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [candidateTranscript, interviewerTranscript, currentCandidateParagraph, currentInterviewerParagraph, currentCandidateInterim, currentInterviewerInterim, settings.autoScroll]);
+  }, [candidateTranscript, interviewerTranscript, currentCandidateParagraph, currentInterviewerParagraph, settings.autoScroll]);
 
   useEffect(() => {
     if (settings.autoScroll) {
@@ -419,7 +380,7 @@ export default function InterviewAssist() {
   }, [qaList, currentAnswer, settings.autoScroll]);
 
   // ============================================================================
-  // TRANSCRIPT HANDLING (HTTP API)
+  // TRANSCRIPT HANDLING
   // ============================================================================
 
   const handleTranscriptFromAPI = (transcript, streamType) => {
@@ -446,6 +407,7 @@ export default function InterviewAssist() {
       setCurrentInterviewerParagraph('');
       console.log('📝 Interviewer:', transcript.substring(0, 50) + '...');
       
+      // Auto-process for Q&A
       handleQuestionProcessing(transcript);
     }
   };
@@ -453,6 +415,7 @@ export default function InterviewAssist() {
   const handleQuestionProcessing = async (transcript) => {
     try {
       setIsGenerating(true);
+      setQaStatus("🤖 Processing...");
       
       const result = await processQuestion(transcript, settings, personaData);
       
@@ -462,6 +425,7 @@ export default function InterviewAssist() {
         setCurrentQuestion(result.question);
         setCurrentAnswer(result.answer);
         setIsStreamingComplete(false);
+        setQaStatus("🤖 Q&A Active");
 
         const streamingDuration = result.answer.length * 20 + 500;
 
@@ -479,10 +443,13 @@ export default function InterviewAssist() {
             setIsStreamingComplete(false);
           }, 1000);
         }, streamingDuration);
+      } else {
+        setQaStatus("🤖 Q&A Active");
       }
 
     } catch (error) {
       console.error('❌ Q&A processing error:', error);
+      setQaStatus("❌ Q&A Error");
     } finally {
       setIsGenerating(false);
     }
@@ -500,16 +467,12 @@ export default function InterviewAssist() {
     const language = languageMap[settings.audioLanguage] || "en";
 
     if (streamType === 'candidate') {
-      setCurrentCandidateParagraph('Processing...');
+      setCurrentCandidateParagraph('⏳ Processing...');
     } else {
-      setCurrentInterviewerParagraph('Processing...');
+      setCurrentInterviewerParagraph('⏳ Processing...');
     }
 
-    const result = await transcribeAudio(
-      audioData, // Pass Int16Array directly
-      streamType,
-      language
-    );
+    const result = await transcribeAudio(audioData, streamType, language);
 
     if (result && result.transcript) {
       handleTranscriptFromAPI(result.transcript, streamType);
@@ -572,10 +535,10 @@ export default function InterviewAssist() {
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-      console.log('✓ Microphone started');
+      console.log('✅ Microphone started');
     } catch (err) {
       console.error('❌ Microphone error:', err);
-      setTabAudioError('Microphone denied');
+      setTabAudioError('Microphone access denied');
       throw err;
     }
   };
@@ -648,7 +611,7 @@ export default function InterviewAssist() {
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-      console.log('✓ System audio started');
+      console.log('✅ System audio started');
       setShowTabModal(false);
     } catch (err) {
       console.error('❌ System audio error:', err);
@@ -706,10 +669,8 @@ export default function InterviewAssist() {
 
     setCurrentCandidateParagraph('');
     setCurrentInterviewerParagraph('');
-    setCurrentCandidateInterim('');
-    setCurrentInterviewerInterim('');
 
-    console.log('✓ All capture stopped');
+    console.log('✅ All capture stopped');
   };
 
   // ============================================================================
@@ -767,7 +728,7 @@ export default function InterviewAssist() {
 
   const generatePDF = () => {
     if (!qaList || qaList.length === 0) {
-      alert("No Q&A data");
+      alert("No Q&A data to export");
       return;
     }
 
@@ -832,7 +793,7 @@ export default function InterviewAssist() {
   }, []);
 
   // ============================================================================
-  // LOADING & AUTH
+  // RENDER
   // ============================================================================
 
   if (loading) {
@@ -847,11 +808,6 @@ export default function InterviewAssist() {
 
   const currentTranscript = activeView === "interviewer" ? interviewerTranscript : candidateTranscript;
   const currentParagraph = activeView === "interviewer" ? currentInterviewerParagraph : currentCandidateParagraph;
-  const currentInterim = activeView === "interviewer" ? currentInterviewerInterim : currentCandidateInterim;
-
-  // ============================================================================
-  // RENDER
-  // ============================================================================
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col">
@@ -870,7 +826,7 @@ export default function InterviewAssist() {
                 {personaData ? `${personaData.position} @ ${personaData.company_name}` : "Interview Assistant"}
               </h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                Vercel Edition - HTTP API (WAV Fixed)
+                Vercel Edition - Real-time AI Assistant
               </p>
             </div>
           </div>
@@ -995,7 +951,7 @@ export default function InterviewAssist() {
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* LEFT: Deepgram Dual-Stream Transcription */}
+        {/* LEFT: Transcription Panel */}
         <div className="w-1/2 border-r border-gray-800 flex flex-col">
           <div className="bg-gray-900 border-b border-gray-800 flex items-center">
             <button
@@ -1044,7 +1000,7 @@ export default function InterviewAssist() {
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-            {currentTranscript.length === 0 && !currentParagraph && !currentInterim ? (
+            {currentTranscript.length === 0 && !currentParagraph ? (
               <div className="h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="mb-4">
@@ -1110,7 +1066,7 @@ export default function InterviewAssist() {
           </div>
         </div>
 
-        {/* RIGHT: Q&A Copilot */}
+        {/* RIGHT: Q&A Panel */}
         <div className="w-1/2 flex flex-col">
           <div className="bg-gray-900 px-6 py-3 border-b border-gray-800 flex items-center justify-between">
             <div>
@@ -1210,8 +1166,8 @@ export default function InterviewAssist() {
             className={`w-2 h-2 rounded-full ${
               deepgramStatus.includes("Recording")
                 ? "bg-green-500 animate-pulse"
-                : deepgramStatus.includes("Error") || deepgramStatus.includes("Reconnecting")
-                ? "bg-yellow-500"
+                : deepgramStatus.includes("Error")
+                ? "bg-red-500"
                 : "bg-gray-600"
             }`}
           />
@@ -1225,8 +1181,10 @@ export default function InterviewAssist() {
             className={`w-2 h-2 rounded-full ${
               qaStatus.includes("Active")
                 ? "bg-blue-500 animate-pulse"
-                : qaStatus.includes("Error") || qaStatus.includes("Reconnecting")
-                ? "bg-yellow-500"
+                : qaStatus.includes("Processing")
+                ? "bg-purple-500 animate-pulse"
+                : qaStatus.includes("Error")
+                ? "bg-red-500"
                 : "bg-gray-600"
             }`}
           />
@@ -1297,12 +1255,12 @@ export default function InterviewAssist() {
               </div>
 
               <div className="bg-blue-900/20 border border-blue-800/50 rounded-lg p-4">
-                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Vercel HTTP Edition (WAV Fixed)</h4>
+                <h4 className="text-sm font-medium mb-2 text-blue-300">💡 Vercel Complete Edition</h4>
                 <ul className="text-gray-400 text-sm space-y-1 list-disc list-inside">
-                  <li>HTTP POST API with proper WAV encoding</li>
-                  <li>~{settings.pauseInterval}s buffered transcription</li>
-                  <li>Fixed Deepgram audio format error</li>
-                  <li>Serverless auto-scaling</li>
+                  <li>Real-time transcription with WAV format</li>
+                  <li>~{settings.pauseInterval}s buffered processing</li>
+                  <li>Automatic Q&A generation</li>
+                  <li>Resume AI integration</li>
                 </ul>
               </div>
 
@@ -1319,7 +1277,3 @@ export default function InterviewAssist() {
     </div>
   );
 }
-
-
-
-
